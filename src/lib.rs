@@ -222,8 +222,27 @@ mod vault {
     mod tests {
         use super::*;
         use ink_lang as ink;
+        use pink::chain_extension::signing;
 
         #[ink::test]
-        fn test_key_managerment() {}
+        fn test_key_managerment() {
+            // 1. assume there is a property with id as '1', and content as "hello world!"
+            // 2. alice owns the property
+            // 3. alice registers the property in her name
+            // 4. alice gets the encryption key
+            // 5. alice encrypts the property("hello world!") with that key
+            // 6. alice sends the ciphertext along with the signature to the contract
+            //
+            // For purposes of test only:
+            //
+            // 7. the contract first examinates the property signature
+            // 8. the contract decrypts the encrypted property, and make sure the result is "hello world!"
+            let prop_id = 1;
+            let prop = "hello world!".as_bytes().to_vec();
+            // let alice_keypair = signing::derive_sr25519_key("some salt".as_bytes());
+            // let alice_pubkey = signing::get_public_key(&alice_keypair, pink::chain_extension::SigType::Sr25519);
+            // todo!: we expect more from default accounts
+
+        }
     }
 }
