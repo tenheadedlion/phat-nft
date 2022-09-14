@@ -34,8 +34,6 @@ mod vault {
         fn register(&mut self, prop_id: PropertyId) -> Result<()>;
         #[ink(message)]
         fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>>;
-        #[ink(message)]
-        fn verify(&self, prop_id: PropertyId, prop: Vec<u8>, sig: Vec<u8>) -> Result<bool>;
     }
 
     #[ink::trait_definition]
@@ -71,7 +69,8 @@ mod vault {
         // we don't recommend transferring property in plaintext,
         // but in fact, the smart contract won't analyze the data,
         // it just takes the data as a sequence of bytes, and saves the data as long as its signature is valid.
-        prop_data: Option<Vec<u8>>,
+        // this field consists of 2 components, the 1st one is the original data, the second is its signature/checksum
+        prop_data: Option<(Vec<u8>, Vec<u8>)>,
         // each property item has a corresponding key pair
         keypair: Vec<u8>,
     }
@@ -117,6 +116,9 @@ mod vault {
 
         /// Saves the property submitted by the property owner
         ///
+        /// To invoke this function, the owner of the property must have registered the property
+        ///     by the `register` function.
+        ///
         /// todo: should we verify whether the `encrypted_prop` is valid?
         /// if the owner submitted a invalid prop, and after he retrieves the data once again,
         ///  he claims the data is corrupted, this is too bad for a secret-saveing service provider,
@@ -127,7 +129,8 @@ mod vault {
         pub fn save_property(
             &mut self,
             prop_id: PropertyId,
-            encrypted_prop_with_sig: Vec<u8>,
+            encrypted_prop: Vec<u8>,
+            encrypted_prop_sig: Vec<u8>,
         ) -> Result<()> {
             // todo: do sth with the boilerplates
             let caller = Self::env().caller();
@@ -139,21 +142,30 @@ mod vault {
             if record.owner != caller {
                 return Err(Error::PropertyOwnershipDenied);
             }
-            if !Self::verify(&encrypted_prop_with_sig, caller.get_pubkey()) {
+            if !self.verify(prop_id, record.owner.get_pubkey(), &encrypted_prop, &encrypted_prop_sig) {
                 return Err(Error::InvalidPropertySignature);
             }
 
-            record.prop_data = Some(encrypted_prop_with_sig);
+            record.prop_data = Some((encrypted_prop, encrypted_prop_sig));
             self.registered_props.insert(prop_id, &record);
             Ok(())
+        }
+
+        /// Verifies the the property item submitted by the owner
+        ///
+        fn verify(&self, prop_id: PropertyId, owner_pubkey: &[u8], encrypted_prop: &[u8], sig: &[u8]) -> bool {
+            pink::chain_extension::signing::verify(
+                &encrypted_prop,
+                owner_pubkey,
+                &sig,
+                pink::chain_extension::signing::SigType::Sr25519,
+            )
         }
 
         fn derive_key_pair() -> Vec<u8> {
             pink::chain_extension::signing::derive_sr25519_key("some salt".as_bytes())
         }
-        fn verify(prop_with_sig: &[u8], owner_pubkey: &[u8]) -> bool {
-            true
-        }
+
         fn agree(prop_keypair: &[u8], owner_pubkey: &[u8]) -> Result<Vec<u8>> {
             let mut key = [0u8; 32];
             //key.copy_from_slice()
@@ -203,32 +215,6 @@ mod vault {
                 return Err(Error::PropertyOwnershipDenied);
             }
             Self::agree(&record.keypair, record.owner.get_pubkey())
-        }
-
-        /// Verifies the the property item submitted by the owner
-        ///
-        /// todo: ink! traits don't accept referential parameters
-        ///     the price we pay for abstraction is to pass large vectors twice
-        ///     during property data receipt; perhaps we should discard this function
-        #[ink(message)]
-        fn verify(
-            &self,
-            prop_id: PropertyId,
-            encrypted_prop: Vec<u8>,
-            sig: Vec<u8>,
-        ) -> Result<bool> {
-            // get the owner's pubkey from the records
-            let record = self
-                .registered_props
-                .get(prop_id)
-                .map(Ok)
-                .unwrap_or(Err(Error::NoSuchProperty))?;
-            Ok(pink::chain_extension::signing::verify(
-                &encrypted_prop,
-                record.owner.get_pubkey(),
-                &sig,
-                pink::chain_extension::signing::SigType::Sr25519,
-            ))
         }
     }
 
