@@ -5,10 +5,12 @@ use pink_extension as pink;
 #[pink::contract(env=PinkEnvironment)]
 mod vault {
     use super::pink;
+    use ink_lang as ink;
     use ink_prelude::{
         string::{String, ToString},
         vec::Vec,
     };
+    use ink_primitives::Key;
     use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout, StorageLayout};
     use ink_storage::Mapping;
     use pink::http_get;
@@ -24,6 +26,28 @@ mod vault {
         NoSuchProperty,
         PropertyOwnershipDenied,
         InvalidPropertySignature,
+    }
+
+    #[ink::trait_definition]
+    pub trait PropKeyManagement {
+        #[ink(message)]
+        fn register(&mut self, prop_id: PropertyId) -> Result<()>;
+        #[ink(message)]
+        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>>;
+        #[ink(message)]
+        fn verify(&self, prop_id: PropertyId, prop: Vec<u8>, sig: Vec<u8>) -> Result<bool>;
+    }
+
+    #[ink::trait_definition]
+    pub trait SubQuery {
+        #[ink(message)]
+        fn verify_ownership(&self, claimer: AccountId, prop_id: PropertyId) -> bool;
+    }
+
+    #[ink::trait_definition]
+    pub trait Backupable {
+        #[ink(message)]
+        fn export(&self) -> Result<String>;
     }
 
     /// A secret vault
@@ -61,6 +85,22 @@ mod vault {
         }
     }
 
+    impl SubQuery for Vault {
+        #[ink(message)]
+        fn verify_ownership(&self, claimer: AccountId, prop_id: PropertyId) -> bool {
+            true
+        }
+    }
+
+    impl Backupable for Vault {
+        type Error = self::Error;
+        /// Export all keys into a json
+        #[ink(message)]
+        fn export(&self) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
     impl Vault {
         #[ink(constructor)]
         pub fn new() -> Self {
@@ -68,43 +108,11 @@ mod vault {
             ink_lang::utils::initialize_contract(|this: &mut Self| {})
         }
 
-        /// Registers property owner
+        /// Verifies if the claimer is actually the owner of the property
         ///
-        /// This function takes the id of the caller as its public key,
-        /// generates a key pair for each property item,
-        /// and then returns a secret key to the caller for property encryption;
-        ///
-        /// todo: how to verify if the caller owns the property?
-        #[ink(message)]
-        pub fn register(&mut self, prop_id: PropertyId) -> Result<()> {
-            let caller = Self::env().caller();
-            if self.registered_props.contains(prop_id) {
-                return Err(Error::PropertyHasAlreadyBeenRegistered);
-            }
-            let keypair = Self::derive_key_pair();
-            let record = Record {
-                owner: caller,
-                prop_id,
-                prop_data: None,
-                keypair,
-            };
-            self.registered_props.insert(prop_id, &record);
-            Ok(())
-        }
-
-        /// Derives the encryption key from prop_id
-        #[ink(message)]
-        pub fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>> {
-            let caller = Self::env().caller();
-            let record = self
-                .registered_props
-                .get(prop_id)
-                .map(Ok)
-                .unwrap_or(Err(Error::NoSuchProperty))?;
-            if record.owner != caller {
-                return Err(Error::PropertyOwnershipDenied);
-            }
-            Self::agree(&record.keypair, record.owner.get_pubkey())
+        /// This is achieved by sending requests to indexing services.
+        fn verify_ownership(claimer: AccountId, prop_id: PropertyId) -> bool {
+            true
         }
 
         /// Saves the property submitted by the property owner
@@ -140,18 +148,87 @@ mod vault {
             Ok(())
         }
 
-        // helper functions
         fn derive_key_pair() -> Vec<u8> {
             pink::chain_extension::signing::derive_sr25519_key("some salt".as_bytes())
         }
-
-        fn agree(prop_keypair: &[u8], owner_pubkey: &[u8]) -> Result<Vec<u8>> {
-            // todo: expose more crypto APIs in pink-extension
-            Ok(Vec::new())
-        }
-
         fn verify(prop_with_sig: &[u8], owner_pubkey: &[u8]) -> bool {
             true
+        }
+        fn agree(prop_keypair: &[u8], owner_pubkey: &[u8]) -> Result<Vec<u8>> {
+            let mut key = [0u8; 32];
+            //key.copy_from_slice()
+
+            Ok(Vec::new())
+        }
+    }
+
+    impl PropKeyManagement for Vault {
+        type Error = self::Error;
+        /// Registers property owner
+        ///
+        /// This function takes the id of the caller as its public key,
+        /// generates a key pair for each property item,
+        /// and then returns a secret key to the caller for property encryption;
+        ///
+        #[ink(message)]
+        fn register(&mut self, prop_id: PropertyId) -> Result<()> {
+            let caller = Self::env().caller();
+            if self.registered_props.contains(prop_id) {
+                return Err(Error::PropertyHasAlreadyBeenRegistered);
+            }
+            let keypair = Self::derive_key_pair();
+            let record = Record {
+                owner: caller,
+                prop_id,
+                prop_data: None,
+                keypair,
+            };
+            if !self.verify_ownership(caller, prop_id) {
+                return Err(Error::PropertyOwnershipDenied);
+            }
+            self.registered_props.insert(prop_id, &record);
+            Ok(())
+        }
+
+        /// Derives the encryption key from prop_id
+        #[ink(message)]
+        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>> {
+            let caller = Self::env().caller();
+            let record = self
+                .registered_props
+                .get(prop_id)
+                .map(Ok)
+                .unwrap_or(Err(Error::NoSuchProperty))?;
+            if record.owner != caller {
+                return Err(Error::PropertyOwnershipDenied);
+            }
+            Self::agree(&record.keypair, record.owner.get_pubkey())
+        }
+
+        /// Verifies the the property item submitted by the owner
+        ///
+        /// todo: ink! traits don't accept referential parameters
+        ///     the price we pay for abstraction is to pass large vectors twice
+        ///     during property data receipt; perhaps we should discard this function
+        #[ink(message)]
+        fn verify(
+            &self,
+            prop_id: PropertyId,
+            encrypted_prop: Vec<u8>,
+            sig: Vec<u8>,
+        ) -> Result<bool> {
+            // get the owner's pubkey from the records
+            let record = self
+                .registered_props
+                .get(prop_id)
+                .map(Ok)
+                .unwrap_or(Err(Error::NoSuchProperty))?;
+            Ok(pink::chain_extension::signing::verify(
+                &encrypted_prop,
+                record.owner.get_pubkey(),
+                &sig,
+                pink::chain_extension::signing::SigType::Sr25519,
+            ))
         }
     }
 
@@ -159,5 +236,8 @@ mod vault {
     mod tests {
         use super::*;
         use ink_lang as ink;
+
+        #[ink::test]
+        fn test_key_managerment() {}
     }
 }

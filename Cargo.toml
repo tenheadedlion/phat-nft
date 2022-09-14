@@ -21,7 +21,7 @@ pink-extension = { path = "../phala-blockchain/crates/pink/pink-extension", defa
 pink-utils = { version = "0.1", default-features = false }
 aes-gcm = { version = "0.9.4" }
 base64 = { version = "0.13.0", default-features = false, features =["alloc"] }
-
+thiserror = "1.0.35"
 
 
 [dev-dependencies]
