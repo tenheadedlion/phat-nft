@@ -22,7 +22,7 @@ pink-utils = { version = "0.1", default-features = false }
 aes-gcm = { version = "0.9.4" }
 base64 = { version = "0.13.0", default-features = false, features =["alloc"] }
 thiserror = "1.0.35"
-
+openbrush = { path = "vendor/openbrush-contracts", version = "~2.1.0", default-features = false }
 
 
 [dev-dependencies]
@@ -47,4 +47,9 @@ std = [
     "scale-info/std",
     "pink-extension/std",
 ]
+
 ink-as-dependency = []
+
+mockable = [
+    "openbrush/mockable",
+]
