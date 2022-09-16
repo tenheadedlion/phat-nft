@@ -48,6 +48,8 @@ std = [
     "pink-extension/std",
 ]
 
+xcm = []
+
 ink-as-dependency = []
 
 mockable = [

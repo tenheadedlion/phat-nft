@@ -87,9 +87,11 @@ mod vault {
     }
 
     #[ink::trait_definition]
-    pub trait SubQuery {
+    pub trait Fetcher {
         #[ink(message)]
-        fn verify_ownership(&self, claimer: AccountId, prop_id: PropertyId) -> bool;
+        fn set_verifier_url(&mut self, sq_url: String) -> Result<()>;
+        #[ink(message)]
+        fn fetch_ownership(&self, prop_id: PropertyId) -> bool;
     }
 
     #[ink::trait_definition]
@@ -116,6 +118,8 @@ mod vault {
         registered_props_shadow: Vec<PropertyId>,
         // people who have permission to export keys
         backup_operators: Vec<AccountId>,
+        // subquery service url
+        verifier: String,
     }
 
     /// Stores property-related information
@@ -139,10 +143,21 @@ mod vault {
         }
     }
 
-    impl SubQuery for Vault {
+    impl Fetcher for Vault {
         #[ink(message)]
-        fn verify_ownership(&self, _account: AccountId, _prop_id: PropertyId) -> bool {
+        fn set_verifier_url(&mut self, verifier: String) -> Result<()> {
+            let caller = Self::env().caller();
+            if !self.admins.contains(&caller) {
+                return Err(Error::PermissionDenied);
+            }
+            self.verifier = verifier;
+            Ok(())
+        }
+        #[ink(message)]
+        fn fetch_ownership(&self, _prop_id: PropertyId) -> bool {
             // todo!
+            //let url = compose_query(prop_id);
+            // http request
             true
         }
     }
@@ -193,10 +208,11 @@ mod vault {
         /// to a particular account
         ///
         /// This function can only be called by the contract adminstrators;
-        /// the report must be true, so that the contract will not poll the SubQuery for verification.
-        /// in fact, apart from SubQuery,
+        /// the report must be true, so that the contract will not poll the Fetcher for verification.
+        /// in fact, apart from Fetcher,
         /// this is the other way for the contract to acquire ownership information.
-        /// the information is directly from the party that manage the ownership.
+        /// the information is directly from the party that manages the ownership.
+        #[cfg(feature = "xcm")]
         #[ink(message)]
         pub fn register_ownership(&mut self, prop_id: PropertyId, acc_id: AccountId) -> Result<()> {
             let caller = Self::env().caller();
@@ -248,24 +264,26 @@ mod vault {
             let iv: [u8; 12] = key.to_array();
             Ok((key, iv.to_vec()))
         }
+        
     }
 
     impl PropKeyManagement for Vault {
         /// Derives an encryption key, and an assess key(iv) from property metainfo,
-        /// the keys are used for AES-GCM cipher
+        /// these keys are used for AES-GCM cipher
         ///
         /// # Detail
         ///
-        /// The owner of the property is able to aes_gcm_encrypt and aes_gcm_decrypt the content of property using this key;
-        /// After transferring the ownership to another person, the formal owner will not be able
-        ///     to access the encrypted property.
+        /// The owner of the property is able to encrypt and decrypt the content of property using this key;
+        /// After handing over the ownership to another person, the formal owner will not be able
+        ///     to decrypt the encrypted property.
         ///
-        /// To enforce ownership, here is one possible strategy:
+        /// To enforce ownership transfer, here is one possible strategy for the party that uses this phat contract:
         ///     the admins get the encryption key, retrieve the original content,
-        ///     and then re-aes_gcm_encrypt the content using another encryption key owned by the new owner.
+        ///     and then re-encrypt the content using another encryption key owned by the new owner.
         ///
-        /// This phat contract simply just provides key derivation computering power and access control,
-        ///     and does not engage in ownership management
+        /// This phat contract is meant to provide key derivation computering power and access control,
+        ///     it holds the keys, but it does not use them, therefore it does not check on user data,
+        ///     besides, it doesn't know where the users store the properties.
         ///
         /// # Permission
         ///
@@ -276,11 +294,25 @@ mod vault {
         fn get_encryption_key(&self, prop_id: PropertyId) -> Result<(Vec<u8>, Vec<u8>)> {
             let caller = Self::env().caller();
 
+            #[cfg(feature = "verifier")]
+            let owner = self.fetch_ownership(prop_id);
+            // caveat: after fetching returns, the property can be immediately transferred to another person,
+            // making the information about `owner` stale
+
             let record = self
                 .registered_props
                 .get(prop_id)
                 .map(Ok)
                 .unwrap_or(Err(Error::NoSuchProperty))?;
+            
+
+            #[cfg(feature = "verifier")]
+            if record.owner != owner {
+                let mut record = record.clone();
+                record.owner = owner;
+                self.registered_props.insert(prop_id, &record);
+            }
+
             if record.owner != caller && !self.admins.contains(&caller) {
                 return Err(Error::PropertyOwnershipDenied);
             }
@@ -299,6 +331,7 @@ mod vault {
             ink_env::test::default_accounts::<Environment>()
         }
 
+        #[cfg(feature = "xcm")]
         #[ink::test]
         fn test_key_managerment() {
             pink_extension_runtime::mock_ext::mock_all_ext();
@@ -385,6 +418,7 @@ mod vault {
             assert_eq!(stuff_decrypted_by_bob, prop);
         }
 
+        #[cfg(feature = "xcm")]
         #[ink::test]
         fn test_export() {
             pink_extension_runtime::mock_ext::mock_all_ext();
