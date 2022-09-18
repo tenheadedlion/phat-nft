@@ -15,7 +15,9 @@ mod inphat {
         InvalidPropertySignature,
         EmtryProperty,
         PermissionDenied,
+        HttpRequestFailed,
         //----------------------
+        // todo: helper errors should be separated to another kind
         CannotEncrypt,
         CannotDecrypt,
     }
@@ -74,8 +76,7 @@ mod vault {
     use ink_lang as ink;
     use ink_prelude::{string::String, vec::Vec};
     use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout};
-    use ink_storage::Mapping;
-    use pink::PinkEnvironment;
+    use pink::{http_get, PinkEnvironment};
     type PropertyId = u128;
     use super::inphat::*;
     use pink::chain_extension::signing;
@@ -83,15 +84,15 @@ mod vault {
     #[ink::trait_definition]
     pub trait PropKeyManagement {
         #[ink(message)]
-        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<(Vec<u8>, Vec<u8>)>;
+        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>>;
     }
 
     #[ink::trait_definition]
     pub trait Fetcher {
         #[ink(message)]
-        fn set_verifier_url(&mut self, sq_url: String) -> Result<()>;
+        fn set_index_server(&mut self, sq_url: String) -> Result<()>;
         #[ink(message)]
-        fn fetch_ownership(&self, prop_id: PropertyId) -> bool;
+        fn fetch_ownership(&self, prop_id: PropertyId) -> Result<AccountId>;
     }
 
     #[ink::trait_definition]
@@ -99,7 +100,7 @@ mod vault {
         #[ink(message)]
         fn grant_backup_permission(&mut self, acc: AccountId) -> Result<()>;
         #[ink(message)]
-        fn export(&self) -> Result<Vec<u8>>;
+        fn export(&self, prop_id: PropertyId) -> Result<Vec<u8>>;
     }
 
     /// A secret vault
@@ -111,15 +112,10 @@ mod vault {
         // The deployer of this contract is not necessary the admin
         deployer: AccountId,
         admins: Vec<AccountId>,
-        // todo: allow iteration over this
-        // https://github.com/paritytech/substrate/issues/11410
-        registered_props: Mapping<PropertyId, Record>,
-        // since we can't iterate through the mapping, we use a vector to keep track of all the properties,
-        registered_props_shadow: Vec<PropertyId>,
         // people who have permission to export keys
         backup_operators: Vec<AccountId>,
-        // subquery service url
-        verifier: String,
+        // indexing service url: where we know who does a property belong to
+        idxsrv_url: String,
     }
 
     /// Stores property-related information
@@ -128,10 +124,10 @@ mod vault {
     )]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub struct Record {
-        owner: AccountId,
         prop_id: PropertyId,
         private_key: Vec<u8>,
         public_key: Vec<u8>,
+        encryption_key: Vec<u8>,
     }
 
     trait PublickeyOwner {
@@ -145,20 +141,23 @@ mod vault {
 
     impl Fetcher for Vault {
         #[ink(message)]
-        fn set_verifier_url(&mut self, verifier: String) -> Result<()> {
+        fn set_index_server(&mut self, idxsrv_url: String) -> Result<()> {
             let caller = Self::env().caller();
             if !self.admins.contains(&caller) {
                 return Err(Error::PermissionDenied);
             }
-            self.verifier = verifier;
+            self.idxsrv_url = idxsrv_url;
             Ok(())
         }
         #[ink(message)]
-        fn fetch_ownership(&self, _prop_id: PropertyId) -> bool {
-            // todo!
-            //let url = compose_query(prop_id);
-            // http request
-            true
+        fn fetch_ownership(&self, _prop_id: PropertyId) -> Result<AccountId> {
+            // todo
+            let resposne = http_get!(&self.idxsrv_url);
+            if resposne.status_code != 200 {
+                return Err(Error::HttpRequestFailed);
+            }
+            let body = resposne.body;
+            Ok(AccountId::from(body.to_array()))
         }
     }
 
@@ -173,19 +172,24 @@ mod vault {
         /// Export all keys into a binary string in substrate encoding,
         ///  for more details check this out: https://docs.substrate.io/reference/scale-codec/
         #[ink(message)]
-        fn export(&self) -> Result<Vec<u8>> {
+        fn export(&self, prop_id: PropertyId) -> Result<Vec<u8>> {
             let caller = Self::env().caller();
 
             if !self.backup_operators.contains(&caller) {
                 return Err(Error::PermissionDenied);
             }
 
-            let mut vec_of_records: Vec<Record> = Vec::new();
-            for prop_id in self.registered_props_shadow.iter() {
-                let record = self.registered_props.get(prop_id).unwrap();
-                vec_of_records.push(record);
-            }
-            Ok(vec_of_records.encode())
+            let (private_key, public_key) = Self::derive_key_pair(prop_id);
+            let encryption_key = self.derive_encryption_key(&public_key);
+
+            let record = Record {
+                prop_id,
+                private_key,
+                public_key,
+                encryption_key,
+            };
+
+            Ok(record.encode())
         }
     }
 
@@ -204,21 +208,29 @@ mod vault {
             })
         }
 
-        fn derive_key_pair() -> (Vec<u8>, Vec<u8>) {
-            let private_key = signing::derive_sr25519_key("some salt".as_bytes());
+        /// Yields a sr25519 private key
+        fn derive_key_pair(prop_id: PropertyId) -> (Vec<u8>, Vec<u8>) {
+            // todo: work on the salt
+            // for now, we assume that given the salt, the following call returns the same private_key
+            let private_key = signing::derive_sr25519_key(prop_id.to_string().as_bytes());
             let public_key =
                 signing::get_public_key(&private_key, pink::chain_extension::SigType::Sr25519);
             (private_key, public_key)
         }
 
-        /// Derives Encryption key from property meta data
-        fn derive_encryption_key(record: &Record) -> Result<(Vec<u8>, Vec<u8>)> {
-            // todo: pink-extension should open several API for this
-            let key = record.owner.get_pubkey().to_vec();
-            let iv: [u8; 12] = key.to_array();
-            Ok((key, iv.to_vec()))
+        /// Gets the private key of the contract
+        /// is it possible??
+        fn private_key(&self) -> Vec<u8> {
+            [1; 32].to_vec()
         }
-        
+
+        /// Derives an encryption from the contract's private key and property's public key
+        fn derive_encryption_key(&self, prop_public_key: &[u8]) -> Vec<u8> {
+            // agree
+            // todo: pink-extension should open several API for this
+            // of course we shouldn't expose private_key, we just leave the key derivation
+            prop_public_key.to_vec()
+        }
     }
 
     impl PropKeyManagement for Vault {
@@ -245,33 +257,17 @@ mod vault {
         /// * the property owner
         ///
         #[ink(message)]
-        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<(Vec<u8>, Vec<u8>)> {
+        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>> {
             let caller = Self::env().caller();
+            let owner = self.fetch_ownership(prop_id)?;
 
-            #[cfg(feature = "verifier")]
-            let owner = self.fetch_ownership(prop_id);
-            // caveat: after fetching returns, the property can be immediately transferred to another person,
-            // making the information about `owner` stale
-
-            let record = self
-                .registered_props
-                .get(prop_id)
-                .map(Ok)
-                .unwrap_or(Err(Error::NoSuchProperty))?;
-            
-
-            #[cfg(feature = "verifier")]
-            if record.owner != owner {
-                let mut record = record.clone();
-                record.owner = owner;
-                self.registered_props.insert(prop_id, &record);
-            }
-
-            if record.owner != caller && !self.admins.contains(&caller) {
+            // the admins can bypass the permission checking
+            if owner != caller && !self.admins.contains(&caller) {
                 return Err(Error::PropertyOwnershipDenied);
             }
-
-            Self::derive_encryption_key(&record)
+            let (_private_key, public_key) = Self::derive_key_pair(prop_id);
+            let encryption_key = self.derive_encryption_key(&public_key);
+            Ok(encryption_key)
         }
     }
 
@@ -285,10 +281,19 @@ mod vault {
             ink_env::test::default_accounts::<Environment>()
         }
 
-        #[cfg(feature = "xcm")]
         #[ink::test]
         fn test_key_managerment() {
+            use pink_extension::chain_extension::{mock, HttpResponse};
             pink_extension_runtime::mock_ext::mock_all_ext();
+            macro_rules! mock_http_request {
+                ($account: expr) => {
+                    mock::mock_http_request(move |_| {
+                        HttpResponse::ok(
+                            <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(&$account).to_vec(),
+                        )
+                    });
+                };
+            }
 
             // an ownership transfer scenario:
             //
@@ -303,6 +308,10 @@ mod vault {
             let prop_id = 1;
             let prop = b"the first hello world!".to_vec();
 
+            //  12 bytes initialization vector
+            let alice_assess_key = b"123456789123";
+            let bob_assess_key = b"123456789124";
+
             let accounts = default_accounts();
             let stack = SharedCallStack::new(accounts.charlie);
 
@@ -313,18 +322,20 @@ mod vault {
 
             // the admin django tells the contract that alice owns the property
             stack.switch_account(accounts.django).unwrap();
-            contract
-                .call_mut()
-                .register_ownership(prop_id, accounts.alice)
-                .unwrap();
 
             // alice is able to retrieve the encryption key
             stack.switch_account(accounts.alice).unwrap();
+
+            // mock the response for the http request emitted by `get_encryption_key`,
+            // from this response the contract knows the property now belongs to alice;
+            // todo: we are going to work on the subquery response scheme later
+            mock_http_request!(accounts.alice);
+
             let enc_key_alice = contract.call().get_encryption_key(prop_id).unwrap();
 
             // alice encrypts the property and stores it somewhere
             let cipher_prop =
-                helper::aes_gcm_encrypt(&enc_key_alice.0, &enc_key_alice.1, &prop).unwrap();
+                helper::aes_gcm_encrypt(&enc_key_alice, alice_assess_key, &prop).unwrap();
 
             // bob tries to retrieve the encryption key but he must fail
             stack.switch_account(accounts.bob).unwrap();
@@ -340,19 +351,15 @@ mod vault {
             stack.switch_account(accounts.django).unwrap();
             let key_by_force = contract.call().get_encryption_key(prop_id).unwrap();
             let decrypted_prop =
-                helper::aes_gcm_decrypt(&key_by_force.0, &key_by_force.1, &cipher_prop).unwrap();
+                helper::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop).unwrap();
 
-            // After getting the original content, the admins inform the contract of the ownership change
-            _ = contract
-                .call_mut()
-                .register_ownership(prop_id, accounts.bob);
+            // now the property belongs to bob
+            mock_http_request!(accounts.bob);
+
             let this_key_belongs_to_bob = contract.call().get_encryption_key(prop_id).unwrap();
-            let cipher_prop = helper::aes_gcm_encrypt(
-                &this_key_belongs_to_bob.0,
-                &this_key_belongs_to_bob.1,
-                &decrypted_prop,
-            )
-            .unwrap();
+            let cipher_prop =
+                helper::aes_gcm_encrypt(&this_key_belongs_to_bob, bob_assess_key, &decrypted_prop)
+                    .unwrap();
 
             // now alice is unable to claim the key
             stack.switch_account(accounts.alice).unwrap();
@@ -361,23 +368,21 @@ mod vault {
 
             // and if alice attempts to aes_gcm_decrypt the prop with her old key, she will fail
             assert!(
-                helper::aes_gcm_decrypt(&enc_key_alice.0, &enc_key_alice.1, &cipher_prop).is_err()
+                helper::aes_gcm_decrypt(&enc_key_alice, alice_assess_key, &cipher_prop).is_err()
             );
 
-            // bob gets his key and retrieve the content expectedly
+            // bob gets his key and retrieve the content as expected
             stack.switch_account(accounts.bob).unwrap();
             let key_bob = contract.call().get_encryption_key(prop_id).unwrap();
             let stuff_decrypted_by_bob =
-                helper::aes_gcm_decrypt(&key_bob.0, &key_bob.1, &cipher_prop).unwrap();
+                helper::aes_gcm_decrypt(&key_bob, bob_assess_key, &cipher_prop).unwrap();
             assert_eq!(stuff_decrypted_by_bob, prop);
         }
 
-        #[cfg(feature = "xcm")]
         #[ink::test]
         fn test_export() {
             pink_extension_runtime::mock_ext::mock_all_ext();
             let prop_id = 1;
-            let prop2_id = 2;
 
             let accounts = default_accounts();
             let stack = SharedCallStack::new(accounts.charlie);
@@ -386,33 +391,20 @@ mod vault {
                 Addressable::create_native(1, Vault::new(accounts.django), stack.clone());
 
             stack.switch_account(accounts.django).unwrap();
-            contract
-                .call_mut()
-                .register_ownership(prop_id, accounts.alice)
-                .unwrap();
-            contract
-                .call_mut()
-                .register_ownership(prop2_id, accounts.eve)
-                .unwrap();
-            
+
             // register an export operator
             _ = contract.call_mut().grant_backup_permission(accounts.bob);
 
             // bob issues an exportation
             stack.switch_account(accounts.bob).unwrap();
-            let exp = contract.call().export().unwrap();
+            let exp = contract.call().export(prop_id).unwrap();
             let mut exp: &[u8] = &exp;
 
-            type VecRecord = Vec<Record>;
-            let rec_replay = VecRecord::decode(&mut exp).ok().unwrap();
-            let r0 = &rec_replay[0];
-            let r1 = &rec_replay[1];
+            let rec_replay = Record::decode(&mut exp).ok().unwrap();
+            let r0 = &rec_replay;
 
-            assert_eq!(r0.owner, accounts.alice);
+            // todo: further tests on the keys
             assert_eq!(r0.prop_id, prop_id);
-            
-            assert_eq!(r1.owner, accounts.eve);
-            assert_eq!(r1.prop_id, prop2_id);
         }
     }
 }
