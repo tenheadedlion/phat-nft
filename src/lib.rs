@@ -204,52 +204,6 @@ mod vault {
             })
         }
 
-        /// Reports the change of ownship to the contract, associates a property
-        /// to a particular account
-        ///
-        /// This function can only be called by the contract adminstrators;
-        /// the report must be true, so that the contract will not poll the Fetcher for verification.
-        /// in fact, apart from Fetcher,
-        /// this is the other way for the contract to acquire ownership information.
-        /// the information is directly from the party that manages the ownership.
-        #[cfg(feature = "xcm")]
-        #[ink(message)]
-        pub fn register_ownership(&mut self, prop_id: PropertyId, acc_id: AccountId) -> Result<()> {
-            let caller = Self::env().caller();
-            if !self.admins.contains(&caller) {
-                return Err(Error::PermissionDenied);
-            }
-
-            if !self.registered_props.contains(prop_id) {
-                let (private_key, public_key) = Self::derive_key_pair();
-                let record = Record {
-                    owner: acc_id,
-                    prop_id,
-                    private_key,
-                    public_key,
-                };
-                self.registered_props.insert(prop_id, &record);
-                self.registered_props_shadow.push(prop_id);
-                return Ok(());
-            }
-
-            let mut record = self
-                .registered_props
-                .get(prop_id)
-                .map(Ok)
-                .unwrap_or(Err(Error::NoSuchProperty))?;
-
-            // we observe a transfer in ownership
-            if record.owner != acc_id {
-                record.owner = acc_id;
-                self.registered_props.insert(prop_id, &record);
-                self.registered_props_shadow.push(prop_id);
-                return Ok(());
-            }
-
-            Ok(())
-        }
-
         fn derive_key_pair() -> (Vec<u8>, Vec<u8>) {
             let private_key = signing::derive_sr25519_key("some salt".as_bytes());
             let public_key =
