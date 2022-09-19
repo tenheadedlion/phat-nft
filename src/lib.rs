@@ -116,6 +116,7 @@ mod vault {
         backup_operators: Vec<AccountId>,
         // indexing service url: where we know who does a property belong to
         idxsrv_url: String,
+        contract_private_key: Vec<u8>,
     }
 
     /// Stores property-related information
@@ -202,9 +203,12 @@ mod vault {
         /// of the first admin, who has the power to appoint other admins
         #[ink(constructor)]
         pub fn new(admin: AccountId) -> Self {
+            let salt = Self::env().caller();
+            let private_key = signing::derive_sr25519_key(salt.as_ref());
             ink_lang::utils::initialize_contract(|this: &mut Self| {
                 this.deployer = Self::env().caller();
                 this.admins.push(admin);
+                this.contract_private_key = private_key;
             })
         }
 
@@ -216,12 +220,6 @@ mod vault {
             let public_key =
                 signing::get_public_key(&private_key, pink::chain_extension::SigType::Sr25519);
             (private_key, public_key)
-        }
-
-        /// Gets the private key of the contract
-        /// is it possible??
-        fn private_key(&self) -> Vec<u8> {
-            [1; 32].to_vec()
         }
 
         /// Derives an encryption from the contract's private key and property's public key
