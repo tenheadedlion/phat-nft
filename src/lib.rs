@@ -3,6 +3,7 @@
 use pink_extension as pink;
 
 mod inphat {
+    use ink_prelude::vec::Vec;
     pub use scale::{Decode, Encode};
     pub type Result<T> = core::result::Result<T, Error>;
     #[derive(Encode, Decode, Debug, PartialEq, Eq, Copy, Clone)]
@@ -20,6 +21,7 @@ mod inphat {
         // todo: helper errors should be separated to another kind
         CannotEncrypt,
         CannotDecrypt,
+        InvalidHTTPResponse,
     }
 }
 
@@ -28,6 +30,7 @@ mod helper {
     use super::inphat::*;
     use aes_gcm::aead::{Aead, NewAead};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use ink_prelude::vec::Vec;
     // todo: organize them out to somewhere
     pub trait Roundable<T, const N: usize> {
         fn to_array(&self) -> [T; N];
@@ -74,7 +77,7 @@ mod vault {
     use super::pink;
 
     use ink_lang as ink;
-    use ink_prelude::{string::String, vec::Vec};
+    use ink_prelude::{string::String, string::ToString, vec::Vec};
     use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout};
     use pink::{http_get, PinkEnvironment};
     type PropertyId = u128;
@@ -90,7 +93,7 @@ mod vault {
     #[ink::trait_definition]
     pub trait Fetcher {
         #[ink(message)]
-        fn set_index_server(&mut self, sq_url: String) -> Result<()>;
+        fn set_indexer(&mut self, sq_url: String) -> Result<()>;
         #[ink(message)]
         fn fetch_ownership(&self, prop_id: PropertyId) -> Result<AccountId>;
     }
@@ -115,7 +118,7 @@ mod vault {
         // people who have permission to export keys
         backup_operators: Vec<AccountId>,
         // indexing service url: where we know who does a property belong to
-        idxsrv_url: String,
+        indexer: String,
         contract_private_key: Vec<u8>,
     }
 
@@ -131,6 +134,23 @@ mod vault {
         encryption_key: Vec<u8>,
     }
 
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    pub struct Response<'a> {
+        #[serde(borrow)]
+        data: Data<'a>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    struct Data<'a> {
+        #[serde(borrow)]
+        property: Property<'a>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize, Debug)]
+    struct Property<'a> {
+        owner: &'a str,
+    }
+
     trait PublickeyOwner {
         fn get_pubkey(&self) -> &[u8];
     }
@@ -142,23 +162,47 @@ mod vault {
 
     impl Fetcher for Vault {
         #[ink(message)]
-        fn set_index_server(&mut self, idxsrv_url: String) -> Result<()> {
+        fn set_indexer(&mut self, indexer: String) -> Result<()> {
             let caller = Self::env().caller();
             if !self.admins.contains(&caller) {
                 return Err(Error::PermissionDenied);
             }
-            self.idxsrv_url = idxsrv_url;
+            self.indexer = indexer;
             Ok(())
         }
+        /// Requests the indexer for information about property's owner
+        ///
+        /// This is where implementations diverge, in this use case,
+        /// we assume the indexers can recogize POST data with **graphql** syntax, for example:
+        ///     '{"query":"{ property( id:\"123343\"  ) { owner  }}"}',
+        ///
+        /// when we use `curl` with POST method and payload like this:
+        ///
+        /// ```shell
+        ///  $ curl 'https://indexer.hello.com/' -H 'Content-Type: application/json' \
+        ///     -H 'Accept: application/json' --data-binary
+        ///     '{"query":"{ property( id:\"123343\"  ) { owner  }}"}'
+        /// ```
+        ///
+        /// we get
+        ///
+        ///     {"data":{"property":{"owner":"11111111111111111111111111111111"}}}
+        ///
+        /// This function returns the address of the property owner
+        /// todo: can we abstract this function away?
         #[ink(message)]
         fn fetch_ownership(&self, _prop_id: PropertyId) -> Result<AccountId> {
-            // todo
-            let resposne = http_get!(&self.idxsrv_url);
+            let resposne = http_get!(&self.indexer);
             if resposne.status_code != 200 {
                 return Err(Error::HttpRequestFailed);
             }
             let body = resposne.body;
-            Ok(AccountId::from(body.to_array()))
+            let (res, _): (Response, usize) =
+                serde_json_core::from_slice(&body).or(Err(Error::InvalidHTTPResponse))?;
+            // todo
+            Ok(AccountId::from(
+                res.data.property.owner.as_bytes().to_vec().to_array(),
+            ))
         }
     }
 
@@ -279,19 +323,45 @@ mod vault {
             ink_env::test::default_accounts::<Environment>()
         }
 
-        #[ink::test]
+        macro_rules! mock_http_request {
+            ($account: expr) => {
+                mock::mock_http_request(move |_| {
+                    /*
+                    let serialized = format!(
+                        r#"{{"data":{{"property":{{"owner":"{owner}"}}}}}}"#,
+                        owner = std::str::from_utf8(
+                            <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(&$account)
+                        )
+                        .unwrap()
+                    );
+                    dbg!(std::str::from_utf8(
+                            <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(&$account)
+                        )
+                        .unwrap().len());
+                    */
+                    let response = Response {
+                        data: Data {
+                            property: Property {
+                                owner: &std::string::String::from_utf8_lossy(<ink_env::AccountId as AsRef<
+                                    [u8; 32],
+                                >>::as_ref(
+                                    &$account
+                                ))
+                                
+                            },
+                        },
+                    };
+                    let serialized = serde_json::to_string(&response).unwrap();
+                    dbg!(&serialized);
+                    HttpResponse::ok(serialized.as_bytes().to_vec())
+                });
+            };
+        }
+
+        //#[ink::test]
         fn test_key_managerment() {
             use pink_extension::chain_extension::{mock, HttpResponse};
             pink_extension_runtime::mock_ext::mock_all_ext();
-            macro_rules! mock_http_request {
-                ($account: expr) => {
-                    mock::mock_http_request(move |_| {
-                        HttpResponse::ok(
-                            <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(&$account).to_vec(),
-                        )
-                    });
-                };
-            }
 
             // an ownership transfer scenario:
             //
@@ -403,6 +473,29 @@ mod vault {
 
             // todo: further tests on the keys
             assert_eq!(r0.prop_id, prop_id);
+        }
+
+        #[ink::test]
+        fn test_indexer() {
+            use pink_extension::chain_extension::{mock, HttpResponse};
+            pink_extension_runtime::mock_ext::mock_all_ext();
+
+            let accounts = default_accounts();
+            let stack = SharedCallStack::new(accounts.charlie);
+
+            let contract =
+                Addressable::create_native(1, Vault::new(accounts.django), stack.clone());
+            assert_eq!(contract.call().deployer, accounts.alice);
+
+            mock::mock_http_request(|_| {
+                    HttpResponse::ok(br#"{"data":{"property":{"owner":"11111111111111111111111111111111"}}}"#.to_vec())
+            });
+
+            dbg!(accounts.alice);
+           // mock_http_request!(accounts.alice);
+
+            let account = contract.call().fetch_ownership(1).unwrap();
+            dbg!(account);
         }
     }
 }
