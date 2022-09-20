@@ -33,6 +33,8 @@ mod helper {
     use core::primitive::str;
     use ink_env::AccountId;
     use ink_prelude::vec::Vec;
+    use ink_prelude::string::String;
+    use ink_prelude::string::ToString;
 
     #[derive(Encode, Decode, Debug, PartialEq, Eq, Copy, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
@@ -70,7 +72,7 @@ mod helper {
     /// convert an ascii string as an 256-bit AccountId
     ///
     /// eg.: "111...1111" =>  [1, 1, 1,..., 1, 1, 1]
-    pub fn from_ascii(src: &str) -> std::result::Result<AccountId, PhatError> {
+    pub fn from_ascii(src: &str) -> core::result::Result<AccountId, PhatError> {
         assert_eq!(src.len(), 32);
         Ok(AccountId::from(
             src.chars()
