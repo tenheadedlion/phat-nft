@@ -30,8 +30,16 @@ mod helper {
     use super::inphat::*;
     use aes_gcm::aead::{Aead, NewAead};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use core::primitive::str;
+    use ink_env::AccountId;
     use ink_prelude::vec::Vec;
-    // todo: organize them out to somewhere
+
+    #[derive(Encode, Decode, Debug, PartialEq, Eq, Copy, Clone)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    pub enum PhatError {
+        CodecFailure,
+    }
+
     pub trait Roundable<T, const N: usize> {
         fn to_array(&self) -> [T; N];
     }
@@ -48,6 +56,41 @@ mod helper {
             arr
         }
     }
+
+    trait PublickeyOwner {
+        fn get_pubkey(&self) -> &[u8];
+    }
+
+    impl PublickeyOwner for AccountId {
+        fn get_pubkey(&self) -> &[u8] {
+            self.as_ref()
+        }
+    }
+
+    /// convert an ascii string as an 256-bit AccountId
+    ///
+    /// eg.: "111...1111" =>  [1, 1, 1,..., 1, 1, 1]
+    pub fn from_ascii(src: &str) -> std::result::Result<AccountId, PhatError> {
+        assert_eq!(src.len(), 32);
+        Ok(AccountId::from(
+            src.chars()
+                .map(|c| c as u8 - 48u8)
+                .collect::<Vec<u8>>()
+                .to_array(),
+        ))
+    }
+
+    /// convert an account into a literal string
+    ///
+    /// eg.: [1, 1, ...] => "11..."
+    pub fn from_accountid<'a>(account: &'a AccountId) -> String {
+        let vec = <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(account)
+            .into_iter()
+            .map(|n| n + 48)
+            .collect::<Vec<u8>>();
+        String::from_utf8_lossy(&vec).to_string()
+    }
+
     pub fn aes_gcm_encrypt(encryption_key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
         let key = Key::from_slice(encryption_key);
         let cipher = Aes256Gcm::new(key);
@@ -151,15 +194,6 @@ mod vault {
         owner: &'a str,
     }
 
-    trait PublickeyOwner {
-        fn get_pubkey(&self) -> &[u8];
-    }
-    impl PublickeyOwner for AccountId {
-        fn get_pubkey(&self) -> &[u8] {
-            self.as_ref()
-        }
-    }
-
     impl Fetcher for Vault {
         #[ink(message)]
         fn set_indexer(&mut self, indexer: String) -> Result<()> {
@@ -200,9 +234,7 @@ mod vault {
             let (res, _): (Response, usize) =
                 serde_json_core::from_slice(&body).or(Err(Error::InvalidHTTPResponse))?;
             // todo
-            Ok(AccountId::from(
-                res.data.property.owner.as_bytes().to_vec().to_array(),
-            ))
+            Ok(super::helper::from_ascii(res.data.property.owner).unwrap())
         }
     }
 
@@ -326,39 +358,20 @@ mod vault {
         macro_rules! mock_http_request {
             ($account: expr) => {
                 mock::mock_http_request(move |_| {
-                    /*
-                    let serialized = format!(
-                        r#"{{"data":{{"property":{{"owner":"{owner}"}}}}}}"#,
-                        owner = std::str::from_utf8(
-                            <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(&$account)
-                        )
-                        .unwrap()
-                    );
-                    dbg!(std::str::from_utf8(
-                            <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(&$account)
-                        )
-                        .unwrap().len());
-                    */
                     let response = Response {
                         data: Data {
                             property: Property {
-                                owner: &std::string::String::from_utf8_lossy(<ink_env::AccountId as AsRef<
-                                    [u8; 32],
-                                >>::as_ref(
-                                    &$account
-                                ))
-                                
+                                owner: &super::helper::from_accountid(&$account),
                             },
                         },
                     };
                     let serialized = serde_json::to_string(&response).unwrap();
-                    dbg!(&serialized);
                     HttpResponse::ok(serialized.as_bytes().to_vec())
                 });
             };
         }
 
-        //#[ink::test]
+        #[ink::test]
         fn test_key_managerment() {
             use pink_extension::chain_extension::{mock, HttpResponse};
             pink_extension_runtime::mock_ext::mock_all_ext();
@@ -487,15 +500,9 @@ mod vault {
                 Addressable::create_native(1, Vault::new(accounts.django), stack.clone());
             assert_eq!(contract.call().deployer, accounts.alice);
 
-            mock::mock_http_request(|_| {
-                    HttpResponse::ok(br#"{"data":{"property":{"owner":"11111111111111111111111111111111"}}}"#.to_vec())
-            });
-
-            dbg!(accounts.alice);
-           // mock_http_request!(accounts.alice);
-
+            mock_http_request!(accounts.django);
             let account = contract.call().fetch_ownership(1).unwrap();
-            dbg!(account);
+            assert_eq!(accounts.django, account);
         }
     }
 }
