@@ -28,8 +28,8 @@ mod inphat {
 // helper funcions
 mod helper {
     use super::inphat::*;
-    use aes_gcm::aead::{Aead, NewAead};
-    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    
+    
     use core::primitive::str;
     use ink_env::AccountId;
     use ink_prelude::vec::Vec;
@@ -91,28 +91,6 @@ mod helper {
             .map(|n| n + 48)
             .collect::<Vec<u8>>();
         String::from_utf8_lossy(&vec).to_string()
-    }
-
-    pub fn aes_gcm_encrypt(encryption_key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
-        let key = Key::from_slice(encryption_key);
-        let cipher = Aes256Gcm::new(key);
-        let nonce = Nonce::from_slice(iv);
-
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext)
-            .map_err(|_| Error::CannotEncrypt)?;
-        Ok(ciphertext)
-    }
-
-    pub fn aes_gcm_decrypt(encryption_key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
-        let key = Key::from_slice(encryption_key);
-        let cipher = Aes256Gcm::new(key);
-        let nonce = Nonce::from_slice(iv);
-
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| Error::CannotDecrypt)?;
-        Ok(plaintext)
     }
 }
 #[pink::contract(env=PinkEnvironment)]
@@ -418,7 +396,7 @@ mod vault {
 
             // alice encrypts the property and stores it somewhere
             let cipher_prop =
-                helper::aes_gcm_encrypt(&enc_key_alice, alice_assess_key, &prop).unwrap();
+                pink_crypto::aes_gcm_encrypt(&enc_key_alice, alice_assess_key, &prop).unwrap();
 
             // bob tries to retrieve the encryption key but he must fail
             stack.switch_account(accounts.bob).unwrap();
@@ -434,14 +412,14 @@ mod vault {
             stack.switch_account(accounts.django).unwrap();
             let key_by_force = contract.call().get_encryption_key(prop_id).unwrap();
             let decrypted_prop =
-                helper::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop).unwrap();
+                pink_crypto::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop).unwrap();
 
             // now the property belongs to bob
             mock_http_request!(accounts.bob);
 
             let this_key_belongs_to_bob = contract.call().get_encryption_key(prop_id).unwrap();
             let cipher_prop =
-                helper::aes_gcm_encrypt(&this_key_belongs_to_bob, bob_assess_key, &decrypted_prop)
+                pink_crypto::aes_gcm_encrypt(&this_key_belongs_to_bob, bob_assess_key, &decrypted_prop)
                     .unwrap();
 
             // now alice is unable to claim the key
@@ -451,14 +429,14 @@ mod vault {
 
             // and if alice attempts to aes_gcm_decrypt the prop with her old key, she will fail
             assert!(
-                helper::aes_gcm_decrypt(&enc_key_alice, alice_assess_key, &cipher_prop).is_err()
+                pink_crypto::aes_gcm_decrypt(&enc_key_alice, alice_assess_key, &cipher_prop).is_err()
             );
 
             // bob gets his key and retrieve the content as expected
             stack.switch_account(accounts.bob).unwrap();
             let key_bob = contract.call().get_encryption_key(prop_id).unwrap();
             let stuff_decrypted_by_bob =
-                helper::aes_gcm_decrypt(&key_bob, bob_assess_key, &cipher_prop).unwrap();
+                pink_crypto::aes_gcm_decrypt(&key_bob, bob_assess_key, &cipher_prop).unwrap();
             assert_eq!(stuff_decrypted_by_bob, prop);
         }
 

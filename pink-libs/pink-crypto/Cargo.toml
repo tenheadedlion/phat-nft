@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ink_primitives = { version = "3", default-features = false }
+ink_prelude = { version = "3", default-features = false }
 ink_metadata = { version = "3", default-features = false, features = ["derive"], optional = true }
 ink_env = { version = "3", default-features = false }
 ink_storage = { version = "3", default-features = false }
@@ -19,6 +20,7 @@ schnorrkel = { version = "0.9.1", default-features = false, features = ["preaudi
 aead = { version = "0.4.3", default-features = false, optional = true }
 typenum = { version = "1.14.0", default-features = false, optional = true }
 aead-io = { version = "0.1.2", optional = true }
+aes-gcm = { version = "0.9.4" }
 
 [dev-dependencies]
 rand = "0.7.3"
