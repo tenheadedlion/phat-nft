@@ -22,6 +22,9 @@ typenum = { version = "1.14.0", default-features = false, optional = true }
 aead-io = { version = "0.1.2", optional = true }
 aes-gcm = { version = "0.9.4" }
 
+pink-extension = { path = "../../../phala-blockchain/crates/pink/pink-extension", default-features = false }
+pink-traits = { path = "../pink-traits" }
+
 [dev-dependencies]
 rand = "0.7.3"
 hex = "0.4"

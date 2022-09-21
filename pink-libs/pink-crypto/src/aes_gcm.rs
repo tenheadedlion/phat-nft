@@ -1,7 +1,7 @@
 use aes_gcm::aead::{Aead, NewAead};
-
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use crate::error::CryptoError;
+use ink_prelude::vec::Vec;
 
 pub fn aes_gcm_encrypt(encryption_key: &[u8], iv: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let key = Key::from_slice(encryption_key);

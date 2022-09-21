@@ -28,6 +28,7 @@ serde = { version = "1.0.137", default-features = false, features = ["derive", "
 serde-json-core = { version = "0.4.0" }
 
 pink-crypto = { path = "pink-libs/pink-crypto" }
+pink-traits = { path = "pink-libs/pink-traits" }
 
 [dev-dependencies]
 pink-extension-runtime = "0.1.3"

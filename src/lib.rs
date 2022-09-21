@@ -2,8 +2,17 @@
 
 use pink_extension as pink;
 
-mod inphat {
-    use ink_prelude::vec::Vec;
+#[pink::contract(env=PinkEnvironment)]
+mod vault {
+
+    use super::pink;
+
+    use ink_lang as ink;
+    use ink_prelude::{string::String, string::ToString, vec::Vec};
+    use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout};
+    use pink::{http_get, PinkEnvironment};
+    type PropertyId = u128;
+
     pub use scale::{Decode, Encode};
     pub type Result<T> = core::result::Result<T, Error>;
     #[derive(Encode, Decode, Debug, PartialEq, Eq, Copy, Clone)]
@@ -17,95 +26,8 @@ mod inphat {
         EmtryProperty,
         PermissionDenied,
         HttpRequestFailed,
-        //----------------------
-        // todo: helper errors should be separated to another kind
-        CannotEncrypt,
-        CannotDecrypt,
         InvalidHTTPResponse,
     }
-}
-
-// helper funcions
-mod helper {
-    use super::inphat::*;
-    
-    
-    use core::primitive::str;
-    use ink_env::AccountId;
-    use ink_prelude::vec::Vec;
-    use ink_prelude::string::String;
-    use ink_prelude::string::ToString;
-
-    #[derive(Encode, Decode, Debug, PartialEq, Eq, Copy, Clone)]
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub enum PhatError {
-        CodecFailure,
-    }
-
-    pub trait Roundable<T, const N: usize> {
-        fn to_array(&self) -> [T; N];
-    }
-
-    impl<T, const N: usize> Roundable<T, N> for Vec<T>
-    where
-        T: Default + Copy,
-    {
-        fn to_array(&self) -> [T; N] {
-            let mut arr = [T::default(); N];
-            for (a, v) in arr.iter_mut().zip(self.iter()) {
-                *a = *v;
-            }
-            arr
-        }
-    }
-
-    trait PublickeyOwner {
-        fn get_pubkey(&self) -> &[u8];
-    }
-
-    impl PublickeyOwner for AccountId {
-        fn get_pubkey(&self) -> &[u8] {
-            self.as_ref()
-        }
-    }
-
-    /// convert an ascii string as an 256-bit AccountId
-    ///
-    /// eg.: "111...1111" =>  [1, 1, 1,..., 1, 1, 1]
-    pub fn from_ascii(src: &str) -> core::result::Result<AccountId, PhatError> {
-        assert_eq!(src.len(), 32);
-        Ok(AccountId::from(
-            src.chars()
-                .map(|c| c as u8 - 48u8)
-                .collect::<Vec<u8>>()
-                .to_array(),
-        ))
-    }
-
-    /// convert an account into a literal string
-    ///
-    /// eg.: [1, 1, ...] => "11..."
-    pub fn from_accountid<'a>(account: &'a AccountId) -> String {
-        let vec = <ink_env::AccountId as AsRef<[u8; 32]>>::as_ref(account)
-            .into_iter()
-            .map(|n| n + 48)
-            .collect::<Vec<u8>>();
-        String::from_utf8_lossy(&vec).to_string()
-    }
-}
-#[pink::contract(env=PinkEnvironment)]
-mod vault {
-    use crate::helper::{self, Roundable};
-
-    use super::pink;
-
-    use ink_lang as ink;
-    use ink_prelude::{string::String, string::ToString, vec::Vec};
-    use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout};
-    use pink::{http_get, PinkEnvironment};
-    type PropertyId = u128;
-    use super::inphat::*;
-    use pink::chain_extension::signing;
 
     #[ink::trait_definition]
     pub trait PropKeyManagement {
@@ -142,7 +64,7 @@ mod vault {
         backup_operators: Vec<AccountId>,
         // indexing service url: where we know who does a property belong to
         indexer: String,
-        contract_private_key: Vec<u8>,
+        contract_key: Vec<u8>,
     }
 
     /// Stores property-related information
@@ -214,7 +136,7 @@ mod vault {
             let (res, _): (Response, usize) =
                 serde_json_core::from_slice(&body).or(Err(Error::InvalidHTTPResponse))?;
             // todo
-            Ok(super::helper::from_ascii(res.data.property.owner).unwrap())
+            Ok(pink_traits::from_ascii(res.data.property.owner).unwrap())
         }
     }
 
@@ -236,8 +158,12 @@ mod vault {
                 return Err(Error::PermissionDenied);
             }
 
-            let (private_key, public_key) = Self::derive_key_pair(prop_id);
-            let encryption_key = self.derive_encryption_key(&public_key);
+            let prop_key = Self::derive_key_pair(prop_id);
+            let private_key = prop_key.private_key();
+            let public_key = prop_key.public_key();
+            let encryption_key = pink_crypto::public_key::PhatKey::restore_from(&self.contract_key)
+                .agree(&public_key)
+                .unwrap();
 
             let record = Record {
                 prop_id,
@@ -260,30 +186,18 @@ mod vault {
         #[ink(constructor)]
         pub fn new(admin: AccountId) -> Self {
             let salt = Self::env().caller();
-            let private_key = signing::derive_sr25519_key(salt.as_ref());
+            let private_key = pink_crypto::public_key::PhatKey::new(salt.as_ref()).dump();
             ink_lang::utils::initialize_contract(|this: &mut Self| {
                 this.deployer = Self::env().caller();
                 this.admins.push(admin);
-                this.contract_private_key = private_key;
+                this.contract_key = private_key;
             })
         }
 
-        /// Yields a sr25519 private key
-        fn derive_key_pair(prop_id: PropertyId) -> (Vec<u8>, Vec<u8>) {
-            // todo: work on the salt
-            // for now, we assume that given the salt, the following call returns the same private_key
-            let private_key = signing::derive_sr25519_key(prop_id.to_string().as_bytes());
-            let public_key =
-                signing::get_public_key(&private_key, pink::chain_extension::SigType::Sr25519);
-            (private_key, public_key)
-        }
-
-        /// Derives an encryption from the contract's private key and property's public key
-        fn derive_encryption_key(&self, prop_public_key: &[u8]) -> Vec<u8> {
-            // agree
-            // todo: pink-extension should open several API for this
-            // of course we shouldn't expose private_key, we just leave the key derivation
-            prop_public_key.to_vec()
+        /// Yields a Phatkey
+        fn derive_key_pair(prop_id: PropertyId) -> pink_crypto::public_key::PhatKey {
+            // given the same salt, the following call returns the same result
+            pink_crypto::public_key::PhatKey::new(prop_id.to_string().as_bytes())
         }
     }
 
@@ -319,8 +233,11 @@ mod vault {
             if owner != caller && !self.admins.contains(&caller) {
                 return Err(Error::PropertyOwnershipDenied);
             }
-            let (_private_key, public_key) = Self::derive_key_pair(prop_id);
-            let encryption_key = self.derive_encryption_key(&public_key);
+            let prop_key = Self::derive_key_pair(prop_id);
+            let encryption_key = pink_crypto::public_key::PhatKey::restore_from(&self.contract_key)
+                .agree(&prop_key.public_key())
+                .unwrap();
+
             Ok(encryption_key)
         }
     }
@@ -341,7 +258,7 @@ mod vault {
                     let response = Response {
                         data: Data {
                             property: Property {
-                                owner: &super::helper::from_accountid(&$account),
+                                owner: &pink_traits::from_accountid(&$account),
                             },
                         },
                     };
@@ -412,15 +329,19 @@ mod vault {
             stack.switch_account(accounts.django).unwrap();
             let key_by_force = contract.call().get_encryption_key(prop_id).unwrap();
             let decrypted_prop =
-                pink_crypto::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop).unwrap();
+                pink_crypto::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop)
+                    .unwrap();
 
             // now the property belongs to bob
             mock_http_request!(accounts.bob);
 
             let this_key_belongs_to_bob = contract.call().get_encryption_key(prop_id).unwrap();
-            let cipher_prop =
-                pink_crypto::aes_gcm_encrypt(&this_key_belongs_to_bob, bob_assess_key, &decrypted_prop)
-                    .unwrap();
+            let cipher_prop = pink_crypto::aes_gcm_encrypt(
+                &this_key_belongs_to_bob,
+                bob_assess_key,
+                &decrypted_prop,
+            )
+            .unwrap();
 
             // now alice is unable to claim the key
             stack.switch_account(accounts.alice).unwrap();
@@ -429,7 +350,8 @@ mod vault {
 
             // and if alice attempts to aes_gcm_decrypt the prop with her old key, she will fail
             assert!(
-                pink_crypto::aes_gcm_decrypt(&enc_key_alice, alice_assess_key, &cipher_prop).is_err()
+                pink_crypto::aes_gcm_decrypt(&enc_key_alice, alice_assess_key, &cipher_prop)
+                    .is_err()
             );
 
             // bob gets his key and retrieve the content as expected
