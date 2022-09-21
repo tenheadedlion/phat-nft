@@ -1,4 +1,4 @@
-# Implementing an NFT Ownership Managemer with Phat Contracts
+# Implementing NFT Ownership Management with Phat Contracts
 
 This demo shows how to use Phala's Phat Contracts to manage NFT ownership. 
 
