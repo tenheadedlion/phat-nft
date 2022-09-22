@@ -43,5 +43,11 @@ If the owner has sold the NFT, then he will have no access to the encryption key
 
 ```shell
 git submodule update --init
+cargo contract build
+```
+
+Run unit tests:
+
+```shell
 cargo test --features mockable -- --nocapture
 ```
