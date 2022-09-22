@@ -37,7 +37,7 @@ Someone owns an NFT from an NFT blockchain. The following events happen in this 
 6. the client encrypts the NFT
 7. the client stores the encrypted NFT somewhere
 
-If the owner has sold the NFT, then he will have no access to the encryption key again, it's up to the Phat Contract developer to decide what key managing stategies to use, but we can see that the access control mechanism is achieved by off-chain operations, this is almost impossible for smart contracts other than Phat Contracts.
+If the owner has sold the NFT, then he will have no access to the previously encrypted NFT again, it's up to the Phat Contract developer to decide what key managing stategies to use, but we can see that the access control mechanism is achieved by off-chain operations, this is almost impossible for smart contracts other than Phat Contracts.
 
 ## Build
 
