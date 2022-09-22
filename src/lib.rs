@@ -62,12 +62,12 @@ mod nft_manager {
         admins: Vec<AccountId>,
         // people who have permission to export keys
         backup_operators: Vec<AccountId>,
-        // indexing service url: where we know who does an property belong to
+        // indexing service url: where we know who does an nft belong to
         indexer: String,
         contract_key: Vec<u8>,
     }
 
-    /// Stores property-related information
+    /// Stores nft-related information
     #[derive(
         Encode, Decode, Debug, PartialEq, Eq, Clone, SpreadLayout, PackedLayout, SpreadAllocate,
     )]
@@ -88,7 +88,7 @@ mod nft_manager {
     #[derive(serde::Serialize, serde::Deserialize, Debug)]
     struct Data<'a> {
         #[serde(borrow)]
-        property: Property<'a>,
+        nft: Property<'a>,
     }
 
     #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -106,25 +106,25 @@ mod nft_manager {
             self.indexer = indexer;
             Ok(())
         }
-        /// Requests the indexer for information about property's owner
+        /// Requests the indexer for information about nft's owner
         ///
         /// This is where implementations diverge, in this use case,
         /// we assume the indexers can recogize POST data with **graphql** syntax, for example:
-        ///     '{"query":"{ property( id:\"123343\"  ) { owner  }}"}',
+        ///     '{"query":"{ nft( id:\"123343\"  ) { owner  }}"}',
         ///
         /// when we use `curl` with POST method and payload like this:
         ///
         /// ```shell
         ///  $ curl 'https://indexer.hello.com/' -H 'Content-Type: application/json' \
         ///     -H 'Accept: application/json' --data-binary
-        ///     '{"query":"{ property( id:\"123343\"  ) { owner  }}"}'
+        ///     '{"query":"{ nft( id:\"123343\"  ) { owner  }}"}'
         /// ```
         ///
         /// we get
         ///
-        ///     {"data":{"property":{"owner":"11111111111111111111111111111111"}}}
+        ///     {"data":{"nft":{"owner":"11111111111111111111111111111111"}}}
         ///
-        /// This function returns the address of the property owner
+        /// This function returns the address of the nft owner
         /// todo: can we abstract this function away?
         #[ink(message)]
         fn fetch_ownership(&self, _prop_id: NFTId) -> Result<AccountId> {
@@ -136,7 +136,7 @@ mod nft_manager {
             let (res, _): (Response, usize) =
                 serde_json_core::from_slice(&body).or(Err(Error::InvalidHTTPResponse))?;
             // todo
-            Ok(pink_traits::from_ascii(res.data.property.owner).unwrap())
+            Ok(pink_traits::from_ascii(res.data.nft.owner).unwrap())
         }
     }
 
@@ -202,14 +202,14 @@ mod nft_manager {
     }
 
     impl PropKeyManagement for NFTManager {
-        /// Derives an encryption key, and an assess key(iv) from property metainfo,
+        /// Derives an encryption key, and an assess key(iv) from nft metainfo,
         /// these keys are used for AES-GCM cipher
         ///
         /// # Detail
         ///
-        /// The owner of the property is able to encrypt and decrypt the content of property using this key;
+        /// The owner of the nft is able to encrypt and decrypt the content of nft using this key;
         /// After handing over the ownership to another person, the formal owner will not be able
-        ///     to decrypt the encrypted property.
+        ///     to decrypt the encrypted nft.
         ///
         /// To enforce ownership transfer, here is one possible strategy for the party that uses this phat contract:
         ///     the admins get the encryption key, retrieve the original content,
@@ -222,7 +222,7 @@ mod nft_manager {
         /// # Permission
         ///
         /// * contract admins
-        /// * the property owner
+        /// * the nft owner
         ///
         #[ink(message)]
         fn get_encryption_key(&self, nft_id: NFTId) -> Result<Vec<u8>> {
@@ -257,7 +257,7 @@ mod nft_manager {
                 mock::mock_http_request(move |_| {
                     let response = Response {
                         data: Data {
-                            property: Property {
+                            nft: Property {
                                 owner: &pink_traits::from_accountid(&$account),
                             },
                         },
@@ -275,13 +275,13 @@ mod nft_manager {
 
             // an ownership transfer scenario:
             //
-            //  1. assume there is a property with id as '1', with content as "the first hello world!"
-            //  2. alice owns the property
+            //  1. assume there is a nft with id as '1', with content as "the first hello world!"
+            //  2. alice owns the nft
             //  3. the contract generates an encryption key for alice
-            //  4. alice sells that property to bob
+            //  4. alice sells that nft to bob
             //  5. somehow the contract knows the transfer of ownership and generates an encryption key for bob
-            //  6. alice no longer owns the property but she attempts to aes_gcm_decrypt it, she must fail
-            //  7. now bob is the property owner, he is able to claim the plaintext of the property
+            //  6. alice no longer owns the nft but she attempts to aes_gcm_decrypt it, she must fail
+            //  7. now bob is the nft owner, he is able to claim the plaintext of the nft
 
             let nft_id = 1;
             let prop = b"the first hello world!".to_vec();
@@ -298,20 +298,20 @@ mod nft_manager {
                 Addressable::create_native(1, NFTManager::new(accounts.django), stack.clone());
             assert_eq!(contract.call().deployer, accounts.alice);
 
-            // the admin django tells the contract that alice owns the property
+            // the admin django tells the contract that alice owns the nft
             stack.switch_account(accounts.django).unwrap();
 
             // alice is able to retrieve the encryption key
             stack.switch_account(accounts.alice).unwrap();
 
             // mock the response for the http request emitted by `get_encryption_key`,
-            // from this response the contract knows the property now belongs to alice;
+            // from this response the contract knows the nft now belongs to alice;
             // todo: we are going to work on the subquery response scheme later
             mock_http_request!(accounts.alice);
 
             let enc_key_alice = contract.call().get_encryption_key(nft_id).unwrap();
 
-            // alice encrypts the property and stores it somewhere
+            // alice encrypts the nft and stores it somewhere
             let cipher_prop =
                 pink_crypto::aes_gcm_encrypt(&enc_key_alice, alice_assess_key, &prop).unwrap();
 
@@ -320,19 +320,19 @@ mod nft_manager {
             let enc_key_bob = contract.call().get_encryption_key(nft_id);
             assert!(enc_key_bob.is_err());
 
-            // bob trades with alice and now owns the property
+            // bob trades with alice and now owns the nft
             // django informs the contract of the transaction
             stack.switch_account(accounts.django).unwrap();
 
             // the admins supervise the transaction and make sure it is done,
-            // they get the key from the contract and retrieve the property
+            // they get the key from the contract and retrieve the nft
             stack.switch_account(accounts.django).unwrap();
             let key_by_force = contract.call().get_encryption_key(nft_id).unwrap();
             let decrypted_prop =
                 pink_crypto::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop)
                     .unwrap();
 
-            // now the property belongs to bob
+            // now the nft belongs to bob
             mock_http_request!(accounts.bob);
 
             let this_key_belongs_to_bob = contract.call().get_encryption_key(nft_id).unwrap();
