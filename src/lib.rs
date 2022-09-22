@@ -3,7 +3,7 @@
 use pink_extension as pink;
 
 #[pink::contract(env=PinkEnvironment)]
-mod vault {
+mod nft_manager {
 
     use super::pink;
 
@@ -11,7 +11,7 @@ mod vault {
     use ink_prelude::{string::String, string::ToString, vec::Vec};
     use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout};
     use pink::{http_get, PinkEnvironment};
-    type PropertyId = u128;
+    type NFTId = u128;
 
     pub use scale::{Decode, Encode};
     pub type Result<T> = core::result::Result<T, Error>;
@@ -32,7 +32,7 @@ mod vault {
     #[ink::trait_definition]
     pub trait PropKeyManagement {
         #[ink(message)]
-        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>>;
+        fn get_encryption_key(&self, nft_id: NFTId) -> Result<Vec<u8>>;
     }
 
     #[ink::trait_definition]
@@ -40,7 +40,7 @@ mod vault {
         #[ink(message)]
         fn set_indexer(&mut self, sq_url: String) -> Result<()>;
         #[ink(message)]
-        fn fetch_ownership(&self, prop_id: PropertyId) -> Result<AccountId>;
+        fn fetch_ownership(&self, nft_id: NFTId) -> Result<AccountId>;
     }
 
     #[ink::trait_definition]
@@ -48,21 +48,21 @@ mod vault {
         #[ink(message)]
         fn grant_backup_permission(&mut self, acc: AccountId) -> Result<()>;
         #[ink(message)]
-        fn export(&self, prop_id: PropertyId) -> Result<Vec<u8>>;
+        fn export(&self, nft_id: NFTId) -> Result<Vec<u8>>;
     }
 
-    /// A secret vault
+    /// A secret nft_manager
     #[ink(storage)]
     #[derive(SpreadAllocate)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-    pub struct Vault {
+    pub struct NFTManager {
         name: String,
         // The deployer of this contract is not necessary the admin
         deployer: AccountId,
         admins: Vec<AccountId>,
         // people who have permission to export keys
         backup_operators: Vec<AccountId>,
-        // indexing service url: where we know who does a property belong to
+        // indexing service url: where we know who does an property belong to
         indexer: String,
         contract_key: Vec<u8>,
     }
@@ -73,7 +73,7 @@ mod vault {
     )]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub struct Record {
-        prop_id: PropertyId,
+        nft_id: NFTId,
         private_key: Vec<u8>,
         public_key: Vec<u8>,
         encryption_key: Vec<u8>,
@@ -96,7 +96,7 @@ mod vault {
         owner: &'a str,
     }
 
-    impl Fetcher for Vault {
+    impl Fetcher for NFTManager {
         #[ink(message)]
         fn set_indexer(&mut self, indexer: String) -> Result<()> {
             let caller = Self::env().caller();
@@ -127,7 +127,7 @@ mod vault {
         /// This function returns the address of the property owner
         /// todo: can we abstract this function away?
         #[ink(message)]
-        fn fetch_ownership(&self, _prop_id: PropertyId) -> Result<AccountId> {
+        fn fetch_ownership(&self, _prop_id: NFTId) -> Result<AccountId> {
             let resposne = http_get!(&self.indexer);
             if resposne.status_code != 200 {
                 return Err(Error::HttpRequestFailed);
@@ -140,7 +140,7 @@ mod vault {
         }
     }
 
-    impl Backupable for Vault {
+    impl Backupable for NFTManager {
         /// Grant permission to an account
         #[ink(message)]
         fn grant_backup_permission(&mut self, acc_id: AccountId) -> Result<()> {
@@ -151,14 +151,14 @@ mod vault {
         /// Export all keys into a binary string in substrate encoding,
         ///  for more details check this out: https://docs.substrate.io/reference/scale-codec/
         #[ink(message)]
-        fn export(&self, prop_id: PropertyId) -> Result<Vec<u8>> {
+        fn export(&self, nft_id: NFTId) -> Result<Vec<u8>> {
             let caller = Self::env().caller();
 
             if !self.backup_operators.contains(&caller) {
                 return Err(Error::PermissionDenied);
             }
 
-            let prop_key = Self::derive_key_pair(prop_id);
+            let prop_key = Self::derive_key_pair(nft_id);
             let private_key = prop_key.private_key();
             let public_key = prop_key.public_key();
             let encryption_key = pink_crypto::public_key::PhatKey::restore_from(&self.contract_key)
@@ -166,7 +166,7 @@ mod vault {
                 .unwrap();
 
             let record = Record {
-                prop_id,
+                nft_id,
                 private_key,
                 public_key,
                 encryption_key,
@@ -176,7 +176,7 @@ mod vault {
         }
     }
 
-    impl Vault {
+    impl NFTManager {
         /// Contructs the contract, and appoints the first admin
         ///
         /// Note that the person who deploys the contract is not necessarily
@@ -195,13 +195,13 @@ mod vault {
         }
 
         /// Yields a Phatkey
-        fn derive_key_pair(prop_id: PropertyId) -> pink_crypto::public_key::PhatKey {
+        fn derive_key_pair(nft_id: NFTId) -> pink_crypto::public_key::PhatKey {
             // given the same salt, the following call returns the same result
-            pink_crypto::public_key::PhatKey::new(prop_id.to_string().as_bytes())
+            pink_crypto::public_key::PhatKey::new(nft_id.to_string().as_bytes())
         }
     }
 
-    impl PropKeyManagement for Vault {
+    impl PropKeyManagement for NFTManager {
         /// Derives an encryption key, and an assess key(iv) from property metainfo,
         /// these keys are used for AES-GCM cipher
         ///
@@ -225,15 +225,15 @@ mod vault {
         /// * the property owner
         ///
         #[ink(message)]
-        fn get_encryption_key(&self, prop_id: PropertyId) -> Result<Vec<u8>> {
+        fn get_encryption_key(&self, nft_id: NFTId) -> Result<Vec<u8>> {
             let caller = Self::env().caller();
-            let owner = self.fetch_ownership(prop_id)?;
+            let owner = self.fetch_ownership(nft_id)?;
 
             // the admins can bypass the permission checking
             if owner != caller && !self.admins.contains(&caller) {
                 return Err(Error::PropertyOwnershipDenied);
             }
-            let prop_key = Self::derive_key_pair(prop_id);
+            let prop_key = Self::derive_key_pair(nft_id);
             let encryption_key = pink_crypto::public_key::PhatKey::restore_from(&self.contract_key)
                 .agree(&prop_key.public_key())
                 .unwrap();
@@ -283,7 +283,7 @@ mod vault {
             //  6. alice no longer owns the property but she attempts to aes_gcm_decrypt it, she must fail
             //  7. now bob is the property owner, he is able to claim the plaintext of the property
 
-            let prop_id = 1;
+            let nft_id = 1;
             let prop = b"the first hello world!".to_vec();
 
             //  12 bytes initialization vector
@@ -295,7 +295,7 @@ mod vault {
 
             // the deployer is not an admin
             let contract =
-                Addressable::create_native(1, Vault::new(accounts.django), stack.clone());
+                Addressable::create_native(1, NFTManager::new(accounts.django), stack.clone());
             assert_eq!(contract.call().deployer, accounts.alice);
 
             // the admin django tells the contract that alice owns the property
@@ -309,7 +309,7 @@ mod vault {
             // todo: we are going to work on the subquery response scheme later
             mock_http_request!(accounts.alice);
 
-            let enc_key_alice = contract.call().get_encryption_key(prop_id).unwrap();
+            let enc_key_alice = contract.call().get_encryption_key(nft_id).unwrap();
 
             // alice encrypts the property and stores it somewhere
             let cipher_prop =
@@ -317,7 +317,7 @@ mod vault {
 
             // bob tries to retrieve the encryption key but he must fail
             stack.switch_account(accounts.bob).unwrap();
-            let enc_key_bob = contract.call().get_encryption_key(prop_id);
+            let enc_key_bob = contract.call().get_encryption_key(nft_id);
             assert!(enc_key_bob.is_err());
 
             // bob trades with alice and now owns the property
@@ -327,7 +327,7 @@ mod vault {
             // the admins supervise the transaction and make sure it is done,
             // they get the key from the contract and retrieve the property
             stack.switch_account(accounts.django).unwrap();
-            let key_by_force = contract.call().get_encryption_key(prop_id).unwrap();
+            let key_by_force = contract.call().get_encryption_key(nft_id).unwrap();
             let decrypted_prop =
                 pink_crypto::aes_gcm_decrypt(&key_by_force, alice_assess_key, &cipher_prop)
                     .unwrap();
@@ -335,7 +335,7 @@ mod vault {
             // now the property belongs to bob
             mock_http_request!(accounts.bob);
 
-            let this_key_belongs_to_bob = contract.call().get_encryption_key(prop_id).unwrap();
+            let this_key_belongs_to_bob = contract.call().get_encryption_key(nft_id).unwrap();
             let cipher_prop = pink_crypto::aes_gcm_encrypt(
                 &this_key_belongs_to_bob,
                 bob_assess_key,
@@ -345,7 +345,7 @@ mod vault {
 
             // now alice is unable to claim the key
             stack.switch_account(accounts.alice).unwrap();
-            let enc_key_alice_again = contract.call().get_encryption_key(prop_id);
+            let enc_key_alice_again = contract.call().get_encryption_key(nft_id);
             assert!(enc_key_alice_again.is_err());
 
             // and if alice attempts to aes_gcm_decrypt the prop with her old key, she will fail
@@ -356,7 +356,7 @@ mod vault {
 
             // bob gets his key and retrieve the content as expected
             stack.switch_account(accounts.bob).unwrap();
-            let key_bob = contract.call().get_encryption_key(prop_id).unwrap();
+            let key_bob = contract.call().get_encryption_key(nft_id).unwrap();
             let stuff_decrypted_by_bob =
                 pink_crypto::aes_gcm_decrypt(&key_bob, bob_assess_key, &cipher_prop).unwrap();
             assert_eq!(stuff_decrypted_by_bob, prop);
@@ -365,13 +365,13 @@ mod vault {
         #[ink::test]
         fn test_export() {
             pink_extension_runtime::mock_ext::mock_all_ext();
-            let prop_id = 1;
+            let nft_id = 1;
 
             let accounts = default_accounts();
             let stack = SharedCallStack::new(accounts.charlie);
 
             let contract =
-                Addressable::create_native(1, Vault::new(accounts.django), stack.clone());
+                Addressable::create_native(1, NFTManager::new(accounts.django), stack.clone());
 
             stack.switch_account(accounts.django).unwrap();
 
@@ -380,14 +380,14 @@ mod vault {
 
             // bob issues an exportation
             stack.switch_account(accounts.bob).unwrap();
-            let exp = contract.call().export(prop_id).unwrap();
+            let exp = contract.call().export(nft_id).unwrap();
             let mut exp: &[u8] = &exp;
 
             let rec_replay = Record::decode(&mut exp).ok().unwrap();
             let r0 = &rec_replay;
 
             // todo: further tests on the keys
-            assert_eq!(r0.prop_id, prop_id);
+            assert_eq!(r0.nft_id, nft_id);
         }
 
         #[ink::test]
@@ -399,7 +399,7 @@ mod vault {
             let stack = SharedCallStack::new(accounts.charlie);
 
             let contract =
-                Addressable::create_native(1, Vault::new(accounts.django), stack.clone());
+                Addressable::create_native(1, NFTManager::new(accounts.django), stack.clone());
             assert_eq!(contract.call().deployer, accounts.alice);
 
             mock_http_request!(accounts.django);
