@@ -7,14 +7,15 @@ mod nft_manager {
 
     use super::pink;
 
-    use ink_lang as ink;
     use ink_prelude::{string::String, string::ToString, vec::Vec};
     use ink_storage::traits::{PackedLayout, SpreadAllocate, SpreadLayout};
     use pink::{http_get, PinkEnvironment};
+
     type NFTId = u128;
 
     pub use scale::{Decode, Encode};
     pub type Result<T> = core::result::Result<T, Error>;
+
     #[derive(Encode, Decode, Debug, PartialEq, Eq, Copy, Clone)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     // todo: separate the errors
@@ -27,28 +28,6 @@ mod nft_manager {
         PermissionDenied,
         HttpRequestFailed,
         InvalidHTTPResponse,
-    }
-
-    #[ink::trait_definition]
-    pub trait PropKeyManagement {
-        #[ink(message)]
-        fn get_encryption_key(&self, nft_id: NFTId) -> Result<Vec<u8>>;
-    }
-
-    #[ink::trait_definition]
-    pub trait Fetcher {
-        #[ink(message)]
-        fn set_indexer(&mut self, sq_url: String) -> Result<()>;
-        #[ink(message)]
-        fn fetch_ownership(&self, nft_id: NFTId) -> Result<AccountId>;
-    }
-
-    #[ink::trait_definition]
-    pub trait Backupable {
-        #[ink(message)]
-        fn grant_backup_permission(&mut self, acc: AccountId) -> Result<()>;
-        #[ink(message)]
-        fn export(&self, nft_id: NFTId) -> Result<Vec<u8>>;
     }
 
     /// A secret nft_manager
@@ -96,9 +75,71 @@ mod nft_manager {
         owner: &'a str,
     }
 
-    impl Fetcher for NFTManager {
+    impl NFTManager {
+        /// Contructs the contract, and appoints the first admin
+        ///
+        /// Note that the person who deploys the contract is not necessarily
+        /// in control of the contract;
+        /// after construction, the contract is totally in the hands
+        /// of the first admin, who has the power to appoint other admins
+        #[ink(constructor)]
+        pub fn new(admin: AccountId) -> Self {
+            let salt = Self::env().caller();
+            let private_key = pink_crypto::public_key::PhatKey::new(salt.as_ref()).dump();
+            ink_lang::utils::initialize_contract(|this: &mut Self| {
+                this.deployer = Self::env().caller();
+                this.admins.push(admin);
+                this.contract_key = private_key;
+            })
+        }
+
+        /// Yields a Phatkey
+        fn derive_key_pair(nft_id: NFTId) -> pink_crypto::public_key::PhatKey {
+            // given the same salt, the following call returns the same result
+            pink_crypto::public_key::PhatKey::new(nft_id.to_string().as_bytes())
+        }
+
+        /// Derives an encryption key, and an assess key(iv) from nft metainfo,
+        /// these keys are used for AES-GCM cipher
+        ///
+        /// # Detail
+        ///
+        /// The owner of the nft is able to encrypt and decrypt the content of nft using this key;
+        /// After handing over the ownership to another person, the formal owner will not be able
+        ///     to decrypt the encrypted nft.
+        ///
+        /// To enforce ownership transfer, here is one possible strategy for the party that uses this phat contract:
+        ///     the admins get the encryption key, retrieve the original content,
+        ///     and then re-encrypt the content using another encryption key owned by the new owner.
+        ///
+        /// This phat contract is meant to provide key derivation computering power and access control,
+        ///     it holds the keys, but it does not use them, therefore it does not check on user data,
+        ///     besides, it doesn't know where the users store the properties.
+        ///
+        /// # Permission
+        ///
+        /// * contract admins
+        /// * the nft owner
+        ///
         #[ink(message)]
-        fn set_indexer(&mut self, indexer: String) -> Result<()> {
+        pub fn get_encryption_key(&self, nft_id: NFTId) -> Result<Vec<u8>> {
+            let caller = Self::env().caller();
+            let owner = self.fetch_ownership(nft_id)?;
+
+            // the admins can bypass the permission checking
+            if owner != caller && !self.admins.contains(&caller) {
+                return Err(Error::PropertyOwnershipDenied);
+            }
+            let prop_key = Self::derive_key_pair(nft_id);
+            let encryption_key = pink_crypto::public_key::PhatKey::restore_from(&self.contract_key)
+                .agree(&prop_key.public_key())
+                .unwrap();
+
+            Ok(encryption_key)
+        }
+
+        #[ink(message)]
+        pub fn set_indexer(&mut self, indexer: String) -> Result<()> {
             let caller = Self::env().caller();
             if !self.admins.contains(&caller) {
                 return Err(Error::PermissionDenied);
@@ -127,7 +168,7 @@ mod nft_manager {
         /// This function returns the address of the nft owner
         /// todo: can we abstract this function away?
         #[ink(message)]
-        fn fetch_ownership(&self, _prop_id: NFTId) -> Result<AccountId> {
+        pub fn fetch_ownership(&self, _prop_id: NFTId) -> Result<AccountId> {
             let resposne = http_get!(&self.indexer);
             if resposne.status_code != 200 {
                 return Err(Error::HttpRequestFailed);
@@ -138,12 +179,10 @@ mod nft_manager {
             // todo
             Ok(pink_traits::from_ascii(res.data.nft.owner).unwrap())
         }
-    }
 
-    impl Backupable for NFTManager {
         /// Grant permission to an account
         #[ink(message)]
-        fn grant_backup_permission(&mut self, acc_id: AccountId) -> Result<()> {
+        pub fn grant_backup_permission(&mut self, acc_id: AccountId) -> Result<()> {
             self.backup_operators.push(acc_id);
             Ok(())
         }
@@ -151,7 +190,7 @@ mod nft_manager {
         /// Export all keys into a binary string in substrate encoding,
         ///  for more details check this out: https://docs.substrate.io/reference/scale-codec/
         #[ink(message)]
-        fn export(&self, nft_id: NFTId) -> Result<Vec<u8>> {
+        pub fn export(&self, nft_id: NFTId) -> Result<Vec<u8>> {
             let caller = Self::env().caller();
 
             if !self.backup_operators.contains(&caller) {
@@ -173,72 +212,6 @@ mod nft_manager {
             };
 
             Ok(record.encode())
-        }
-    }
-
-    impl NFTManager {
-        /// Contructs the contract, and appoints the first admin
-        ///
-        /// Note that the person who deploys the contract is not necessarily
-        /// in control of the contract;
-        /// after construction, the contract is totally in the hands
-        /// of the first admin, who has the power to appoint other admins
-        #[ink(constructor)]
-        pub fn new(admin: AccountId) -> Self {
-            let salt = Self::env().caller();
-            let private_key = pink_crypto::public_key::PhatKey::new(salt.as_ref()).dump();
-            ink_lang::utils::initialize_contract(|this: &mut Self| {
-                this.deployer = Self::env().caller();
-                this.admins.push(admin);
-                this.contract_key = private_key;
-            })
-        }
-
-        /// Yields a Phatkey
-        fn derive_key_pair(nft_id: NFTId) -> pink_crypto::public_key::PhatKey {
-            // given the same salt, the following call returns the same result
-            pink_crypto::public_key::PhatKey::new(nft_id.to_string().as_bytes())
-        }
-    }
-
-    impl PropKeyManagement for NFTManager {
-        /// Derives an encryption key, and an assess key(iv) from nft metainfo,
-        /// these keys are used for AES-GCM cipher
-        ///
-        /// # Detail
-        ///
-        /// The owner of the nft is able to encrypt and decrypt the content of nft using this key;
-        /// After handing over the ownership to another person, the formal owner will not be able
-        ///     to decrypt the encrypted nft.
-        ///
-        /// To enforce ownership transfer, here is one possible strategy for the party that uses this phat contract:
-        ///     the admins get the encryption key, retrieve the original content,
-        ///     and then re-encrypt the content using another encryption key owned by the new owner.
-        ///
-        /// This phat contract is meant to provide key derivation computering power and access control,
-        ///     it holds the keys, but it does not use them, therefore it does not check on user data,
-        ///     besides, it doesn't know where the users store the properties.
-        ///
-        /// # Permission
-        ///
-        /// * contract admins
-        /// * the nft owner
-        ///
-        #[ink(message)]
-        fn get_encryption_key(&self, nft_id: NFTId) -> Result<Vec<u8>> {
-            let caller = Self::env().caller();
-            let owner = self.fetch_ownership(nft_id)?;
-
-            // the admins can bypass the permission checking
-            if owner != caller && !self.admins.contains(&caller) {
-                return Err(Error::PropertyOwnershipDenied);
-            }
-            let prop_key = Self::derive_key_pair(nft_id);
-            let encryption_key = pink_crypto::public_key::PhatKey::restore_from(&self.contract_key)
-                .agree(&prop_key.public_key())
-                .unwrap();
-
-            Ok(encryption_key)
         }
     }
 
